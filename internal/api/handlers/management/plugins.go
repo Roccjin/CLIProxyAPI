@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -423,6 +425,138 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 		"config_preserved":   configured && preserveConfig,
 		"restart_required":   false,
 	})
+}
+
+type pluginRepairRequest struct {
+	Mode    string `json:"mode"`
+	Source  string `json:"source"`
+	Version string `json:"version"`
+}
+
+// RepairPlugin retries loading a configured plugin or reinstalls the binary
+// from the store without deleting plugins.configs.
+func (h *Handler) RepairPlugin(c *gin.Context) {
+	id, okID := pluginIDFromRequest(c)
+	if !okID {
+		return
+	}
+	var req pluginRepairRequest
+	if c.Request != nil && c.Request.Body != nil && c.Request.Body != http.NoBody {
+		if errDecode := json.NewDecoder(c.Request.Body).Decode(&req); errDecode != nil && !errors.Is(errDecode, io.EOF) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body", "message": errDecode.Error()})
+			return
+		}
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if mode == "" {
+		mode = "retry"
+	}
+	switch mode {
+	case "retry":
+		h.repairPluginRetry(c, id)
+	case "reinstall":
+		h.repairPluginReinstall(c, id, req)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_mode", "message": "mode must be retry or reinstall"})
+	}
+}
+
+func (h *Handler) repairPluginRetry(c *gin.Context, id string) {
+	if h == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "plugin_not_found", "message": "plugin not found"})
+		return
+	}
+	h.mu.Lock()
+	if h.cfg == nil {
+		h.mu.Unlock()
+		c.JSON(http.StatusNotFound, gin.H{"error": "plugin_not_found", "message": "plugin not found"})
+		return
+	}
+	item, configured := h.cfg.Plugins.Configs[id]
+	pluginsDir := normalizedPluginsDir(h.cfg.Plugins.Dir)
+	host := h.pluginHost
+	h.mu.Unlock()
+	if !configured {
+		c.JSON(http.StatusNotFound, gin.H{"error": "plugin_not_found", "message": "plugin config is not present; install instead of retry"})
+		return
+	}
+	resolvedPluginsDir, errResolvePluginsDir := config.ResolvePluginsDir(pluginsDir)
+	if errResolvePluginsDir != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_directory_invalid", "message": errResolvePluginsDir.Error()})
+		return
+	}
+	desiredVersions := pluginStoreDesiredVersions(map[string]config.PluginInstanceConfig{id: item})
+	path, errPath := pluginFilePath(resolvedPluginsDir, id, desiredVersions)
+	if errPath != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "plugin_discovery_failed", "message": errPath.Error()})
+		return
+	}
+	if path == "" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":       "plugin_file_missing",
+			"message":     "plugin binary is missing; use mode=reinstall to download it without deleting config",
+			"repair_mode": "reinstall",
+		})
+		return
+	}
+	if host != nil {
+		if desired := host.RestartRequiredVersion(id); desired != "" {
+			c.JSON(http.StatusOK, gin.H{
+				"status":           "restart_required",
+				"id":               htmlsanitize.String(id),
+				"path":             htmlsanitize.String(path),
+				"mode":             "retry",
+				"config_preserved": true,
+				"restart_required": true,
+				"desired_version":  htmlsanitize.String(desired),
+			})
+			return
+		}
+	}
+	h.mu.Lock()
+	cfgSnapshot := h.reloadSnapshotConfigLocked()
+	h.mu.Unlock()
+	h.reloadConfigAfterManagementSaveAsync(c.Request.Context(), cfgSnapshot)
+	c.JSON(http.StatusOK, gin.H{
+		"status":           "retrying",
+		"id":               htmlsanitize.String(id),
+		"path":             htmlsanitize.String(path),
+		"mode":             "retry",
+		"config_preserved": true,
+		"restart_required": false,
+	})
+}
+
+func (h *Handler) repairPluginReinstall(c *gin.Context, id string, req pluginRepairRequest) {
+	if h == nil || h.cfg == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "plugin_not_found", "message": "plugin not found"})
+		return
+	}
+	h.mu.Lock()
+	item, configured := h.cfg.Plugins.Configs[id]
+	h.mu.Unlock()
+	if !configured {
+		c.JSON(http.StatusNotFound, gin.H{"error": "plugin_not_found", "message": "plugin config is not present; install from the store instead"})
+		return
+	}
+	sourceID := strings.TrimSpace(req.Source)
+	version := strings.TrimSpace(req.Version)
+	if sourceID == "" {
+		sourceID = pluginStoreYAMLScalar(yamlMappingValue(pluginStoreConfigNode(item), "source-id"))
+	}
+	if version == "" {
+		version = pluginStoreDesiredVersion(item)
+	}
+	q := c.Request.URL.Query()
+	if sourceID != "" {
+		q.Set("source", sourceID)
+	}
+	if version != "" {
+		q.Set("version", version)
+	}
+	c.Request.URL.RawQuery = q.Encode()
+	c.Request.Body = http.NoBody
+	h.installPluginFromStore(c, runtime.GOOS, runtime.GOARCH)
 }
 
 func parseTruthyQuery(c *gin.Context, keys ...string) bool {

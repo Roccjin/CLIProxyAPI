@@ -722,6 +722,78 @@ func TestDeletePluginPreserveConfigKeepsYAML(t *testing.T) {
 	_ = waitForAsyncReload(t, reloads)
 }
 
+func TestRepairPluginRetryReloadsWithoutDeletingConfig(t *testing.T) {
+	t.Parallel()
+
+	pluginsDir := writeManagementPluginFile(t, "sample")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if errWrite := os.WriteFile(configPath, []byte("plugins:\n  configs:\n    sample:\n      enabled: true\n      state_file: /data/state.json\n"), 0o600); errWrite != nil {
+		t.Fatalf("failed to write test config: %v", errWrite)
+	}
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Dir: pluginsDir,
+				Configs: map[string]config.PluginInstanceConfig{
+					"sample": pluginConfigFromYAML(t, "enabled: true\nstate_file: /data/state.json\n"),
+				},
+			},
+		},
+		configFilePath: configPath,
+	}
+	reloads := make(chan *config.Config, 1)
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+		reloads <- cfg
+	})
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "id", Value: "sample"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/plugins/sample/repair", strings.NewReader(`{"mode":"retry"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.RepairPlugin(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if _, ok := h.cfg.Plugins.Configs["sample"]; !ok {
+		t.Fatal("plugin config was removed during retry")
+	}
+	if !strings.Contains(rec.Body.String(), `"mode":"retry"`) || !strings.Contains(rec.Body.String(), `"config_preserved":true`) {
+		t.Fatalf("response = %s", rec.Body.String())
+	}
+	_ = waitForAsyncReload(t, reloads)
+}
+
+func TestRepairPluginRetryRequiresBinary(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Dir: t.TempDir(),
+				Configs: map[string]config.PluginInstanceConfig{
+					"sample": pluginConfigFromYAML(t, "enabled: true\nstate_file: /data/state.json\n"),
+				},
+			},
+		},
+		configFilePath: filepath.Join(t.TempDir(), "config.yaml"),
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "id", Value: "sample"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/v0/management/plugins/sample/repair", strings.NewReader(`{"mode":"retry"}`))
+	h.RepairPlugin(c)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "plugin_file_missing") {
+		t.Fatalf("response = %s", rec.Body.String())
+	}
+	if _, ok := h.cfg.Plugins.Configs["sample"]; !ok {
+		t.Fatal("plugin config was removed when binary was missing")
+	}
+}
+
 func TestDeletePluginUsesConfiguredStoreVersionWhenFilesCoexist(t *testing.T) {
 	t.Parallel()
 
