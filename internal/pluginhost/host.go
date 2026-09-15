@@ -87,6 +87,7 @@ type Host struct {
 	modelStreams           *modelStreamBridge
 	callbackContexts       *callbackContextRegistry
 	snapshot               atomic.Value
+	restartRequired        map[string]string
 }
 
 func New() *Host {
@@ -116,6 +117,7 @@ func New() *Host {
 		httpStreams:            newHostHTTPStreamBridge(),
 		modelStreams:           newModelStreamBridge(),
 		callbackContexts:       newCallbackContextRegistry(),
+		restartRequired:        make(map[string]string),
 	}
 	h.snapshot.Store(emptySnapshot())
 	return h
@@ -282,11 +284,22 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 			h.mu.Unlock()
 
 			if replaced != nil {
-				h.callQuiesce(ctx, replaced)
+				okQuiesce := h.callQuiesce(ctx, replaced)
 				if errContext := ctx.Err(); errContext != nil {
 					h.clearLoadingRequest(file.ID, request)
 					_, _, _ = h.rollbackReplacement(replaced, item)
 					return
+				}
+				if !okQuiesce {
+					h.clearLoadingRequest(file.ID, request)
+					h.markRestartRequired(file.ID, replaced.version, file.Version)
+					log.WithFields(pluginHotReloadLogFields(file.ID, file.Version, file.Path, replaced.version, replaced.path)).
+						Warn("pluginhost: plugin cannot quiesce safely; keeping the current instance and requiring a controlled restart")
+					if rec, oldFile, okKeep := h.currentCapability(file.ID); okKeep {
+						records = append(records, rec)
+						loadedFiles = append(loadedFiles, oldFile)
+					}
+					continue
 				}
 			}
 			h.startPluginLoad(ctx, file, item, request)
@@ -345,6 +358,7 @@ func (h *Host) ApplyConfig(ctx context.Context, cfg *config.Config) {
 				h.removePluginRuntimeStateLocked(file.ID)
 			}
 			h.loaded[file.ID] = lp
+			delete(h.restartRequired, file.ID)
 			loadedNow = true
 			plugin = loadResult.plugin
 			registeredNow = loadResult.initialized
@@ -848,6 +862,66 @@ func (h *Host) rebuildActivePluginMapsLocked(records []capabilityRecord) {
 	}
 }
 
+func (h *Host) currentCapability(id string) (capabilityRecord, pluginFile, bool) {
+	if h == nil {
+		return capabilityRecord{}, pluginFile{}, false
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return capabilityRecord{}, pluginFile{}, false
+	}
+	snap := h.Snapshot()
+	if snap == nil {
+		return capabilityRecord{}, pluginFile{}, false
+	}
+	for _, rec := range snap.records {
+		if rec.id == id {
+			return rec, pluginFile{ID: rec.id, Path: rec.path, Version: rec.version}, true
+		}
+	}
+	h.mu.Lock()
+	lp := h.loaded[id]
+	h.mu.Unlock()
+	if lp == nil {
+		return capabilityRecord{}, pluginFile{}, false
+	}
+	return capabilityRecord{
+			id:      lp.id,
+			path:    lp.path,
+			version: lp.version,
+			plugin:  lp.plugin,
+		}, pluginFile{
+			ID:      lp.id,
+			Path:    lp.path,
+			Version: lp.version,
+		}, true
+}
+
+func (h *Host) markRestartRequired(id, activeVersion, desiredVersion string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.restartRequired == nil {
+		h.restartRequired = make(map[string]string)
+	}
+	if strings.TrimSpace(desiredVersion) != "" {
+		h.restartRequired[id] = strings.TrimSpace(desiredVersion)
+	} else {
+		h.restartRequired[id] = strings.TrimSpace(activeVersion)
+	}
+}
+
+func (h *Host) RestartRequiredVersion(id string) string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.restartRequired[id]
+}
+
 func (h *Host) callQuiesce(ctx context.Context, lp *loadedPlugin) bool {
 	if h == nil || lp == nil || lp.client == nil {
 		return false
@@ -928,17 +1002,17 @@ func (h *Host) rollbackReplacement(lp *loadedPlugin, item runtimeItemConfig) (ca
 		return capabilityRecord{}, pluginFile{}, false
 	}
 	return capabilityRecord{
-		id:       lp.id,
-		path:     lp.path,
-		version:  lp.version,
-		priority: item.Priority,
-		meta:     plugin.Metadata,
-		plugin:   plugin,
-	}, pluginFile{
-		ID:      lp.id,
-		Path:    lp.path,
-		Version: lp.version,
-	}, true
+			id:       lp.id,
+			path:     lp.path,
+			version:  lp.version,
+			priority: item.Priority,
+			meta:     plugin.Metadata,
+			plugin:   plugin,
+		}, pluginFile{
+			ID:      lp.id,
+			Path:    lp.path,
+			Version: lp.version,
+		}, true
 }
 
 func (h *Host) callRegister(ctx context.Context, lp *loadedPlugin, item runtimeItemConfig) (pluginapi.Plugin, bool) {

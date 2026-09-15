@@ -39,6 +39,9 @@ type pluginListEntry struct {
 	ConfigFields     []pluginConfigFieldInfo `json:"config_fields"`
 	Menus            []pluginMenuInfo        `json:"menus"`
 	Metadata         *pluginMetadataInfo     `json:"metadata"`
+	RestartRequired  bool                    `json:"restart_required,omitempty"`
+	RuntimeStatus    string                  `json:"runtime_status,omitempty"`
+	DesiredVersion   string                  `json:"desired_version,omitempty"`
 }
 
 type pluginMetadataInfo struct {
@@ -143,6 +146,13 @@ func (h *Handler) ListPlugins(c *gin.Context) {
 	for _, id := range ids {
 		entry := entries[id]
 		entry.EffectiveEnabled = pluginsEnabled && entry.Enabled && entry.Registered
+		if host != nil {
+			if desired := host.RestartRequiredVersion(id); desired != "" {
+				entry.RestartRequired = true
+				entry.RuntimeStatus = "restart_required"
+				entry.DesiredVersion = htmlsanitize.String(desired)
+			}
+		}
 		if entry.ConfigFields == nil {
 			entry.ConfigFields = []pluginConfigFieldInfo{}
 		}
@@ -370,6 +380,8 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 		return
 	}
 
+	preserveConfig := parseTruthyQuery(c, "preserve_config", "preserveConfig")
+
 	fileDeleted := false
 	if path != "" {
 		if errRemove := os.Remove(path); errRemove != nil {
@@ -383,8 +395,10 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 	}
 
 	h.mu.Lock()
-	delete(h.cfg.Plugins.Configs, id)
-	if configured {
+	configRemoved := false
+	if configured && !preserveConfig {
+		delete(h.cfg.Plugins.Configs, id)
+		configRemoved = true
 		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
 			h.mu.Unlock()
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -405,9 +419,23 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 		"id":                 htmlsanitize.String(id),
 		"path":               htmlsanitize.String(path),
 		"file_deleted":       fileDeleted,
-		"configured_removed": configured,
+		"configured_removed": configRemoved,
+		"config_preserved":   configured && preserveConfig,
 		"restart_required":   false,
 	})
+}
+
+func parseTruthyQuery(c *gin.Context, keys ...string) bool {
+	if c == nil {
+		return false
+	}
+	for _, key := range keys {
+		switch strings.TrimSpace(strings.ToLower(c.Query(key))) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
 }
 
 func normalizedPluginsDir(dir string) string {

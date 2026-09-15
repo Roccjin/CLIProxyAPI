@@ -665,6 +665,63 @@ func TestDeletePluginRemovesDiscoveredFileAndConfig(t *testing.T) {
 	waitForReloadDone(t, reloadDone)
 }
 
+func TestDeletePluginPreserveConfigKeepsYAML(t *testing.T) {
+	t.Parallel()
+
+	pluginsDir := writeManagementPluginFile(t, "sample")
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if errWrite := os.WriteFile(configPath, []byte("plugins:\n  configs:\n    sample:\n      enabled: true\n      state_file: /data/state.json\n"), 0o600); errWrite != nil {
+		t.Fatalf("failed to write test config: %v", errWrite)
+	}
+	h := &Handler{
+		cfg: &config.Config{
+			Plugins: config.PluginsConfig{
+				Dir: pluginsDir,
+				Configs: map[string]config.PluginInstanceConfig{
+					"sample": pluginConfigFromYAML(t, "enabled: true\nstate_file: /data/state.json\n"),
+				},
+			},
+		},
+		configFilePath: configPath,
+	}
+	reloads := make(chan *config.Config, 1)
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+		reloads <- cfg
+	})
+
+	path, errPath := pluginFilePath(pluginsDir, "sample")
+	if errPath != nil || path == "" {
+		t.Fatalf("pluginFilePath() path=%q err=%v", path, errPath)
+	}
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Params = gin.Params{{Key: "id", Value: "sample"}}
+	c.Request = httptest.NewRequest(http.MethodDelete, "/v0/management/plugins/sample?preserve_config=true", nil)
+	h.DeletePlugin(c)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if _, ok := h.cfg.Plugins.Configs["sample"]; !ok {
+		t.Fatal("plugin config was removed despite preserve_config=true")
+	}
+	data, errReadConfig := os.ReadFile(configPath)
+	if errReadConfig != nil {
+		t.Fatalf("failed to read saved config: %v", errReadConfig)
+	}
+	text := string(data)
+	if !strings.Contains(text, "sample:") || !strings.Contains(text, "state_file: /data/state.json") {
+		t.Fatalf("saved config lost preserved plugin fields:\n%s", text)
+	}
+	if _, errStat := os.Stat(path); !os.IsNotExist(errStat) {
+		t.Fatalf("plugin file stat error = %v, want not exist", errStat)
+	}
+	if !strings.Contains(rec.Body.String(), `"config_preserved":true`) {
+		t.Fatalf("response missing config_preserved: %s", rec.Body.String())
+	}
+	_ = waitForAsyncReload(t, reloads)
+}
+
 func TestDeletePluginUsesConfiguredStoreVersionWhenFilesCoexist(t *testing.T) {
 	t.Parallel()
 

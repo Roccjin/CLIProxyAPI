@@ -875,7 +875,7 @@ func TestHostApplyConfigRollsBackQuiescedPluginWhenReplacementFails(t *testing.T
 	}
 }
 
-func TestHostApplyConfigFallsBackWhenQuiesceUnsupported(t *testing.T) {
+func TestHostApplyConfigRequiresRestartWhenQuiesceUnsupported(t *testing.T) {
 	events := &lifecycleEventRecorder{}
 	oldClient := &lifecycleTestClient{call: func(_ context.Context, method string, _ []byte) ([]byte, error) {
 		events.add("old." + method)
@@ -906,12 +906,17 @@ func TestHostApplyConfigFallsBackWhenQuiesceUnsupported(t *testing.T) {
 	if got, want := events.snapshot(), []string{
 		"old." + pluginabi.MethodPluginRegister,
 		"old." + pluginabi.MethodPluginQuiesce,
-		"replacement." + pluginabi.MethodPluginRegister,
 	}; !slices.Equal(got, want) {
 		t.Fatalf("lifecycle events = %v, want %v", got, want)
 	}
-	if !h.pluginIdentityCurrent("alpha", paths["2.0.0"], "2.0.0") {
-		t.Fatal("unsupported quiesce prevented standard hot reload")
+	if !h.pluginIdentityCurrent("alpha", paths["1.0.0"], "1.0.0") {
+		t.Fatal("old plugin should remain active when quiesce is unsupported")
+	}
+	if h.pluginIdentityCurrent("alpha", paths["2.0.0"], "2.0.0") {
+		t.Fatal("replacement must not activate without a safe quiesce")
+	}
+	if got := h.RestartRequiredVersion("alpha"); got != "2.0.0" {
+		t.Fatalf("restart required version = %q, want 2.0.0", got)
 	}
 }
 

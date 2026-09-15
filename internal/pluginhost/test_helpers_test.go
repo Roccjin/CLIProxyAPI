@@ -56,6 +56,8 @@ func (l *testSymbolLookup) Call(ctx context.Context, method string, request []by
 		return l.callLifecycle(request, false)
 	case pluginabi.MethodPluginReconfigure:
 		return l.callLifecycle(request, true)
+	case pluginabi.MethodPluginQuiesce:
+		return marshalRPCResult(rpcEmptyResponse{})
 	case pluginabi.MethodThinkingIdentifier:
 		if l.active.Capabilities.ThinkingApplier == nil {
 			return nil, fmt.Errorf("missing thinking applier")
