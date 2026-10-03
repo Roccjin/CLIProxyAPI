@@ -13,10 +13,10 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/htmlsanitize"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/htmlsanitize"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -401,7 +401,7 @@ func (h *Handler) DeletePlugin(c *gin.Context) {
 	if configured && !preserveConfig {
 		delete(h.cfg.Plugins.Configs, id)
 		configRemoved = true
-		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg); errSave != nil {
+		if errSave := config.SaveConfigPreserveComments(h.configFilePath, h.cfg, c.GetBool(ConfigV8ContextKey)); errSave != nil {
 			h.mu.Unlock()
 			c.JSON(http.StatusInternalServerError, gin.H{
 				"error":        "config_save_failed",
