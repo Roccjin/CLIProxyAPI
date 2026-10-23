@@ -519,7 +519,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	}
 	prepared.body = sanitizeXAIInputEncryptedContentForBaseURL(prepared.body, baseURL)
 	wsHeaders := applyXAIWebsocketHeaders(ctx, http.Header{}, auth, token, prepared.sessionID, opts.Headers)
-	wsReqBody := buildXAIWebsocketRequestBody(prepared.body, prepared.finalizePayload)
+	wsReqBody := sanitizeXAIChatCompatFields(buildXAIWebsocketRequestBody(prepared.body, prepared.finalizePayload))
 	reporter.SetTranslatedReasoningEffort(wsReqBody, e.Identifier())
 	requestType := strings.TrimSpace(gjson.GetBytes(req.Payload, "type").String())
 	transcriptReset := strings.TrimSpace(gjson.GetBytes(wsReqBody, "previous_response_id").String()) == "" &&
@@ -1101,6 +1101,10 @@ func parseXAIWebsocketError(payload []byte) (error, bool) {
 			statusError.code = xaiError.code
 			if xaiError.retryAfter != nil {
 				statusError.retryAfter = xaiError.retryAfter
+			}
+			if isXAIExplicitRequestRefusal(statusError.code, payload) || xaiError.msg == xaiExplicitRefusalClientBody {
+				statusError.code = http.StatusForbidden
+				statusError.msg = xaiError.msg
 			}
 			return statusError, true
 		}

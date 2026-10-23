@@ -1109,6 +1109,9 @@ const xaiFreeUsageExhaustedCooldown = 24 * time.Hour
 // xaiStatusErr normalizes upstream xAI error bodies for conductor behavior:
 //   - credential invalidation (403 bad-credentials) is remapped to 401 so the
 //     existing OAuth refresh-once-and-retry path runs instead of payment cooldown
+//   - an explicit request refusal (403 permission-denied plus the fixed apology)
+//     is rewritten to one sanitized 403 invalid_request_error so the credential
+//     is neither cooled nor rotated
 //   - free-tier exhaustion (subscription:free-usage-exhausted) carries a 24h
 //     RetryAfter hint for auth cooldown / account rotation
 //
@@ -1116,6 +1119,11 @@ const xaiFreeUsageExhaustedCooldown = 24 * time.Hour
 func xaiStatusErr(code int, body []byte) statusErr {
 	err := statusErr{code: code, msg: string(body)}
 	if len(body) == 0 {
+		return err
+	}
+	if isXAIExplicitRequestRefusal(code, body) {
+		err.code = http.StatusForbidden
+		err.msg = xaiExplicitRefusalClientBody
 		return err
 	}
 	if code == http.StatusForbidden && isXAIBadCredentialsBody(body) {
