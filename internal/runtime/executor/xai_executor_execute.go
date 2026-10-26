@@ -136,6 +136,8 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 					upstreamUsage.PublishFailure(ctx, reporter, errTranslation)
 					return cliproxyexecutor.Response{}, errTranslation
 				}
+				reporter.ObserveClientReasoning(out)
+				reporter.SealReasoningVisibility()
 				if detail, ok := helps.ParseCodexUsage(eventData); ok {
 					reporter.Publish(ctx, detail)
 				}

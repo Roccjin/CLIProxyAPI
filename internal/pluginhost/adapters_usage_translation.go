@@ -224,7 +224,8 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 			CacheCreationTokens: record.Detail.CacheCreationTokens,
 			TotalTokens:         record.Detail.TotalTokens,
 		},
-		ResponseHeaders: cloneHeader(record.ResponseHeaders),
+		ReasoningVisible: record.ReasoningVisible,
+		ResponseHeaders:  cloneHeader(record.ResponseHeaders),
 	})
 }
 

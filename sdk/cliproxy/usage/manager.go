@@ -72,7 +72,12 @@ type Record struct {
 	TTFT        time.Duration
 	Failed      bool
 	Fail        Failure
-	Detail      Detail
+	Detail Detail
+	// ReasoningVisible reports whether the client-facing response contained
+	// non-empty reasoning text. Nil means the executor did not scan for it.
+	// Reasoning token counts are not a substitute: xAI can bill reasoning_tokens
+	// while omitting reasoning_content.
+	ReasoningVisible *bool
 	// ResponseHeaders stores a snapshot of upstream response headers for usage sinks.
 	ResponseHeaders http.Header
 }

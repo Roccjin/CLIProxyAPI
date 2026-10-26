@@ -1583,6 +1583,10 @@ type UsageRecord struct {
 	Failure UsageFailure
 	// Detail contains token usage counters.
 	Detail UsageDetail
+	// ReasoningVisible reports whether the client-facing response contained
+	// non-empty reasoning text. Nil means the executor did not scan for it.
+	// A false value is explicit: reasoning_tokens alone do not count.
+	ReasoningVisible *bool `json:"reasoning_visible,omitempty"`
 	// ResponseHeaders contains selected upstream response headers.
 	ResponseHeaders http.Header
 }

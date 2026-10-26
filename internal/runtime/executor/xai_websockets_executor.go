@@ -881,6 +881,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 								downstreamWarmupCompletedPayload = idMapper.downstreamResponsePayload(downstreamWarmupCompletedPayload)
 							}
 						}
+						reporter.ObserveClientReasoning(downstreamPayload)
 						if !send(cliproxyexecutor.StreamChunk{Payload: downstreamPayload}) {
 							terminateReason = "context_done"
 							terminateErr = ctx.Err()
@@ -894,6 +895,9 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 							}
 							return
 						}
+						if eventType == "response.completed" || eventType == "response.done" {
+							reporter.SealReasoningVisibility()
+						}
 						if isTerminalEvent {
 							return
 						}
@@ -906,6 +910,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 					if helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 						invalidatePatchAttempt()
 					}
+					reporter.ObserveClientReasoning(chunks...)
 					for i := range chunks {
 						if !send(cliproxyexecutor.StreamChunk{Payload: chunks[i]}) {
 							terminateReason = "context_done"
@@ -933,6 +938,9 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 						}
 						helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 						return
+					}
+					if eventType == "response.completed" || eventType == "response.done" {
+						reporter.SealReasoningVisibility()
 					}
 					if eventType == "response.completed" || eventType == "response.done" || patchTerminal {
 						return

@@ -59,6 +59,11 @@ type UsageReporter struct {
 	once                 sync.Once
 
 	responseModelMu sync.RWMutex
+	// reasoningVisibleSet is true after the executor scanned client-facing
+	// output, or as soon as non-empty reasoning text was seen.
+	// reasoningVisible is that scan result. Token counts are not a substitute.
+	reasoningVisibleSet bool
+	reasoningVisible    bool
 	// responseModel holds the latest model name reported by the upstream response.
 	responseModel string
 	// responseModelFinal marks that a terminal event already reported the served
@@ -691,6 +696,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		Failed:               failed,
 		Fail:                 fail,
 		Detail:               detail,
+		ReasoningVisible:     r.reasoningVisibleFor(model),
 	}
 }
 
