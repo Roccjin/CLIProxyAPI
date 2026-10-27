@@ -1208,6 +1208,10 @@ type RequestInterceptResponse struct {
 	ResponseHeaders http.Header
 	// ResponseBody contains the downstream response body used when Terminate is true.
 	ResponseBody []byte
+	// Metadata is merged into the execution options for this attempt. Plugins use
+	// it to pass policy such as the thinking-gate retry budget. Keys already set
+	// by the host are overwritten only when the plugin sends the same key.
+	Metadata map[string]any `json:"Metadata,omitempty"`
 }
 
 // RequestCompletionOutcome identifies how an intercepted request ended.

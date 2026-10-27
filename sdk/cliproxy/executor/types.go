@@ -139,6 +139,8 @@ type RequestAfterAuthInterceptResponse struct {
 	ResponseHeaders http.Header
 	// ResponseBody contains the downstream response body used when Terminate is true.
 	ResponseBody []byte
+	// Metadata is merged into Options.Metadata after credential selection.
+	Metadata map[string]any
 }
 
 // RequestTerminatedError carries a plugin-defined downstream response without executing upstream.

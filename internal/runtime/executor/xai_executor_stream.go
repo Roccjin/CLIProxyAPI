@@ -43,7 +43,14 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	prepared.body = sanitizeXAIInputEncryptedContentForBaseURL(prepared.body, baseURL)
 	prepared.body = sanitizeXAIChatCompatFields(prepared.finalizePayload(prepared.body))
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(prepared.body))
+	upstreamCtx, stopUpstream := context.WithCancel(ctx)
+	streamStarted := false
+	defer func() {
+		if !streamStarted {
+			stopUpstream()
+		}
+	}()
+	httpReq, err := http.NewRequestWithContext(upstreamCtx, http.MethodPost, url, bytes.NewReader(prepared.body))
 	if err != nil {
 		return nil, err
 	}
@@ -73,8 +80,14 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk)
+	thinkingGate := newXAIThinkingGate(ctx, prepared.baseModel, prepared.originalPayload, prepared.body, opts, reporter, stopUpstream)
+	streamStarted = true
 	go func() {
-		defer close(out)
+		defer stopUpstream()
+		defer func() {
+			thinkingGate.finish(ctx, out)
+			close(out)
+		}()
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("xai executor: close response body error: %v", errClose)
@@ -119,12 +132,8 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			}
 			helps.RecordApplyPatchStreamFailureWithUsage(ctx, param, reporter, &streamUsage, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 			reporter.ObserveClientReasoning(chunks...)
-			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
-					return false
-				}
+			if !thinkingGate.emit(ctx, out, chunks) {
+				return false
 			}
 			if helps.StopApplyPatchStreamWithUsage(ctx, param, reporter, &streamUsage, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 				return false
@@ -211,12 +220,13 @@ func (e *XAIExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth
 			streamUsage.PublishFailure(ctx, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 		}
 		for _, event := range finishEvents {
+			var tail [][]byte
 			for _, chunk := range helps.TranslateStreamWithClaudeInputTokens(ctx, prepared.to, prepared.responseFormat, req.Model, prepared.originalPayload, prepared.body, event, &param, claudeInputTokens) {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunk}:
-				case <-ctx.Done():
-					return
-				}
+				tail = append(tail, chunk)
+			}
+			reporter.ObserveClientReasoning(tail...)
+			if !thinkingGate.emit(ctx, out, tail) {
+				return
 			}
 		}
 		if errFinish != nil {

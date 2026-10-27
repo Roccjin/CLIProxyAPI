@@ -698,7 +698,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			}
 		}()
 
-		send := func(chunk cliproxyexecutor.StreamChunk) bool {
+		rawSend := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if ctx == nil {
 				out <- chunk
 				return true
@@ -709,6 +709,19 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 			case <-ctx.Done():
 				return false
 			}
+		}
+		thinkingGate := newXAIThinkingGate(ctx, prepared.baseModel, prepared.originalPayload, prepared.body, opts, reporter, func() {
+			terminateReason = "reasoning_absent"
+			if closer != nil {
+				_ = closer.Close()
+			}
+		})
+		defer thinkingGate.finish(ctx, out)
+		send := func(chunk cliproxyexecutor.StreamChunk) bool {
+			if chunk.Err != nil || len(chunk.Payload) == 0 {
+				return rawSend(chunk)
+			}
+			return thinkingGate.emit(ctx, out, [][]byte{chunk.Payload})
 		}
 
 		var streamUsage helps.StreamUsageBuffer

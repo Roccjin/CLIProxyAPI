@@ -348,6 +348,16 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 		req.Payload = bytes.Clone(resp.Body)
 		opts.OriginalRequest = bytes.Clone(resp.Body)
 	}
+	if len(resp.Metadata) > 0 {
+		if opts.Metadata == nil {
+			opts.Metadata = make(map[string]any, len(resp.Metadata))
+		} else {
+			opts.Metadata = maps.Clone(opts.Metadata)
+		}
+		for key, value := range resp.Metadata {
+			opts.Metadata[key] = value
+		}
+	}
 	if path := strings.TrimSpace(resp.Path); path != "" {
 		if opts.Metadata == nil {
 			opts.Metadata = make(map[string]any, 1)
@@ -498,8 +508,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	attempted := make(map[string]struct{})
 	var lastErr error
 	var upstreamErr error
+	thinkingFailures := cliproxyexecutor.ThinkingFailures(ctx)
+	var replayUngated func() (cliproxyexecutor.Response, error)
 	for {
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+			if replayUngated != nil && cliproxyexecutor.IsReasoningAbsent(lastErr) {
+				return replayUngated()
+			}
 			if lastErr != nil {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
@@ -513,6 +528,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		}
 		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		if errPick != nil {
+			if replayUngated != nil && cliproxyexecutor.IsReasoningAbsent(lastErr) {
+				return replayUngated()
+			}
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, preferredExecutionAttemptError(lastErr, upstreamErr)
 			}
@@ -592,6 +610,16 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execReq = attachResolvedExecutionModelInfo(routing, execReq, auth, routeModel, upstreamModel, restoreExecutionModel)
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
+			replayExecCtx := execCtx
+			replayAuth := auth
+			replayExecutor := executor
+			replayReq := execReq
+			replayOpts := execOpts
+			replayUngated = func() (cliproxyexecutor.Response, error) {
+				releaseCtx := cliproxyexecutor.WithThinkingFailures(replayExecCtx, cliproxyexecutor.ThinkingFailuresRelease)
+				resp, errReplay := replayExecutor.Execute(releaseCtx, replayAuth, replayReq, replayOpts)
+				return resp, errReplay
+			}
 			startExec := time.Now()
 			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
@@ -632,6 +660,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts, AccessToken: authAccessTokenForRequest(execCtx, auth, execOpts.Headers), CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
 			if errExec != nil {
+				if cliproxyexecutor.IsReasoningAbsent(errExec) {
+					thinkingFailures++
+					ctx = cliproxyexecutor.WithThinkingFailures(ctx, thinkingFailures)
+				}
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
@@ -936,9 +968,14 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 	var lastErr error
 	var upstreamErr error
 	var roundTiming homeRetryRoundTiming
+	thinkingFailures := cliproxyexecutor.ThinkingFailures(ctx)
+	var replayUngated func() (*cliproxyexecutor.StreamResult, error)
 	for {
 		allowSameAuthRetry := homeMode && homeSameAuthRetryPending && lastHomeAuthID != "" && homeSameAuthRetries[lastHomeAuthID] == 0
 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials && !allowSameAuthRetry {
+			if replayUngated != nil && cliproxyexecutor.IsReasoningAbsent(lastErr) {
+				return replayUngated()
+			}
 			if lastErr != nil {
 				preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
 				if homeMode {
@@ -971,6 +1008,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, tried)
 		}
 		if errPick != nil {
+			if replayUngated != nil && cliproxyexecutor.IsReasoningAbsent(lastErr) {
+				return replayUngated()
+			}
 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
 			var homeCooldown *homeDispatchRetryAfterError
 			if homeMode && lastErr != nil && errors.As(errPick, &homeCooldown) && homeCooldown != nil {
@@ -1179,8 +1219,29 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			models = models[:1]
 			pooled = false
 		}
+		replayExecCtx := execCtx
+		replayAuth := auth
+		replayExecutor := executor
+		replayReq := execReq
+		replayOpts := execOpts
+		replayModels := append([]string(nil), models...)
+		replayPooled := pooled
+		replayAlias := aliasResult
+		replayRouting := routing
+		replayExecutionModel := streamExecutionModel
+		replayProvider := provider
+		replayRoute := routeModel
+		replayEphemeral := selection != nil
+		replayUngated = func() (*cliproxyexecutor.StreamResult, error) {
+			releaseCtx := cliproxyexecutor.WithThinkingFailures(replayExecCtx, cliproxyexecutor.ThinkingFailuresRelease)
+			return m.executeStreamWithModelPool(releaseCtx, replayExecutor, replayAuth, replayProvider, replayReq, replayOpts, replayRoute, replayExecutionModel, replayModels, replayPooled, replayAlias, replayRouting, false, replayEphemeral)
+		}
 		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
 		if errStream != nil {
+			if cliproxyexecutor.IsReasoningAbsent(errStream) {
+				thinkingFailures++
+				ctx = cliproxyexecutor.WithThinkingFailures(ctx, thinkingFailures)
+			}
 			if hasUpstreamExecutionAttempt(errStream) {
 				upstreamErr = errStream
 			}

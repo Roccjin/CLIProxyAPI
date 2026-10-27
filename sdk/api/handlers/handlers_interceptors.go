@@ -600,6 +600,7 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterAuth(ctx context.Context, 
 		StatusCode:      normalizedTerminationStatus(resp.StatusCode),
 		ResponseHeaders: resp.ResponseHeaders,
 		ResponseBody:    resp.ResponseBody,
+		Metadata:        resp.Metadata,
 	}
 }
 
