@@ -49,6 +49,43 @@ func TestClientGateReleasesToolCallWithoutCountingArguments(t *testing.T) {
 	}
 }
 
+func TestClientGateRetriesToolCallWithoutReasoning(t *testing.T) {
+	gate := NewClientGate(32)
+	gate.RequireToolReasoning = true
+	payload := []byte(`{"choices":[{"delta":{"tool_calls":[{"function":{"name":"exec","arguments":"{}"}}]}}]}`)
+	action, flush := gate.Push(payload)
+	if action != GateRetry || flush != nil {
+		t.Fatalf("tool call action=%v flush=%d", action, len(flush))
+	}
+}
+
+func TestClientGateReleasesToolCallAfterReasoning(t *testing.T) {
+	gate := NewClientGate(32)
+	gate.RequireToolReasoning = true
+	if action, _ := gate.Push([]byte(`{"choices":[{"delta":{"reasoning_content":"plan"}}]}`)); action != GateRelease {
+		t.Fatalf("reasoning action=%v", action)
+	}
+	payload := []byte(`{"choices":[{"delta":{"tool_calls":[{"function":{"name":"exec","arguments":"{}"}}]}}]}`)
+	if action, flush := gate.Push(payload); action != GateRelease || len(flush) != 1 {
+		t.Fatalf("tool call after reasoning action=%v flush=%d", action, len(flush))
+	}
+}
+
+func TestToolCallsRequireReasoningByEffort(t *testing.T) {
+	high := []byte(`{"model":"grok-4.7","reasoning":{"effort":"xhigh"},"input":"hi"}`)
+	if !ToolCallsRequireReasoning("grok-4.7", high, high) {
+		t.Fatal("xhigh must require reasoning before a tool call")
+	}
+	low := []byte(`{"model":"grok-4.7","reasoning":{"effort":"low"},"input":"hi"}`)
+	if ToolCallsRequireReasoning("grok-4.7", low, low) {
+		t.Fatal("low effort must not require it")
+	}
+	none := []byte(`{"model":"grok-4.7","reasoning":{"effort":"none"},"input":"hi"}`)
+	if ToolCallsRequireReasoning("grok-4.7", none, none) {
+		t.Fatal("effort none must not require it")
+	}
+}
+
 func TestThinkingGateActiveSkipsLastAttemptAndThinkingOff(t *testing.T) {
 	meta := map[string]any{
 		cliproxyexecutor.MetadataThinkingRetry:           3,

@@ -29,10 +29,15 @@ const (
 // stream from prose that never carried reasoning text.
 type ClientGate struct {
 	MinOutputTokens int
-	contentTokens   int
-	released        bool
-	retried         bool
-	held            [][]byte
+	// RequireToolReasoning makes a tool call without preceding reasoning text a
+	// retry instead of a release. xAI streams reasoning before the call on a
+	// healthy account, so a call-only reply is the same degradation signal as
+	// prose without reasoning.
+	RequireToolReasoning bool
+	contentTokens        int
+	released             bool
+	retried              bool
+	held                 [][]byte
 }
 
 // NewClientGate starts a latch. minOutputTokens <= 0 uses 32, matching the
@@ -65,7 +70,18 @@ func (g *ClientGate) Push(payload []byte) (GateAction, [][]byte) {
 		return GateRetry, nil
 	}
 	reasoning, tool, tokens := ScanClientChunk(payload)
-	if reasoning || tool {
+	if reasoning {
+		g.released = true
+		flush := append(g.held, payload)
+		g.held = nil
+		return GateRelease, flush
+	}
+	if tool {
+		if g.RequireToolReasoning {
+			g.retried = true
+			g.held = nil
+			return GateRetry, nil
+		}
 		g.released = true
 		flush := append(g.held, payload)
 		g.held = nil
@@ -137,6 +153,25 @@ func modelExpectsVisibleThinking(model string, original, upstream []byte) bool {
 		return false
 	}
 	return true
+}
+
+// ToolCallsRequireReasoning reports whether a tool call on this request must
+// carry visible reasoning text. Only the top reasoning levels promise it; lower
+// efforts may legitimately answer with a bare call and must not be retried.
+func ToolCallsRequireReasoning(model string, original, upstream []byte) bool {
+	if !modelExpectsVisibleThinking(model, original, upstream) {
+		return false
+	}
+	effort := thinking.ExtractTranslatedReasoningEffort(upstream, "xai")
+	if effort == "" {
+		effort = thinking.ExtractReasoningEffort(original, "xai", model)
+	}
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
 }
 
 func metadataInt(metadata map[string]any, key string) int {

@@ -25,9 +25,11 @@ func newXAIThinkingGate(ctx context.Context, model string, original, upstream []
 	if !active {
 		return &xaiThinkingGate{}
 	}
+	gate := helps.NewClientGate(minTokens)
+	gate.RequireToolReasoning = helps.ToolCallsRequireReasoning(model, original, upstream)
 	return &xaiThinkingGate{
 		active:   true,
-		gate:     helps.NewClientGate(minTokens),
+		gate:     gate,
 		reporter: reporter,
 		stop:     stop,
 	}
@@ -94,6 +96,7 @@ func rejectNonStream(ctx context.Context, model string, original, upstream, body
 		return nil
 	}
 	gate := helps.NewClientGate(minTokens)
+	gate.RequireToolReasoning = helps.ToolCallsRequireReasoning(model, original, upstream)
 	action, _ := gate.Push(body)
 	if action == helps.GateHold {
 		action, _ = gate.Finish()

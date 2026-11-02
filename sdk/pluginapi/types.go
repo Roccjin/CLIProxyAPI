@@ -1740,6 +1740,9 @@ type UsageDetail struct {
 	CacheCreationTokens int64
 	// TotalTokens is the total token count.
 	TotalTokens int64
+	// ToolCallsRequested is the number of client tool calls the upstream
+	// response asked for, mirroring usage.ToolUsageDetails.ToolCallsRequested.
+	ToolCallsRequested *int64
 }
 
 // QuotaProvider surfaces credential quota, balance, and billing information for management clients.

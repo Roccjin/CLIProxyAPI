@@ -228,10 +228,22 @@ func (a *usageAdapter) HandleUsage(ctx context.Context, record coreusage.Record)
 			CacheReadTokens:     record.Detail.CacheReadTokens,
 			CacheCreationTokens: record.Detail.CacheCreationTokens,
 			TotalTokens:         record.Detail.TotalTokens,
+			ToolCallsRequested:  toolCallsRequested(record.Detail.ToolUsageDetails),
 		},
 		ReasoningVisible: record.ReasoningVisible,
 		ResponseHeaders:  cloneHeader(record.ResponseHeaders),
 	})
+}
+
+// toolCallsRequested mirrors the upstream tool-call counter for passive
+// consumers that classify short replies (a bare tool call is not a short
+// answer, so the egress guard must not apply its output floor to it).
+func toolCallsRequested(details *coreusage.ToolUsageDetails) *int64 {
+	if details == nil || details.ToolCallsRequested == nil {
+		return nil
+	}
+	value := *details.ToolCallsRequested
+	return &value
 }
 
 func (a *thinkingAdapter) Apply(body []byte, config thinking.ThinkingConfig, modelInfo *registry.ModelInfo) (out []byte, err error) {
