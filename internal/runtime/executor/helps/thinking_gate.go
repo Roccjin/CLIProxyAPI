@@ -37,6 +37,7 @@ type ClientGate struct {
 	contentTokens        int
 	released             bool
 	retried              bool
+	retriedOnTool        bool
 	held                 [][]byte
 }
 
@@ -55,6 +56,12 @@ func (g *ClientGate) ContentTokens() int {
 		return 0
 	}
 	return g.contentTokens
+}
+
+// RetriedOnTool reports whether the retry decision came from a tool call that
+// carried no reasoning text.
+func (g *ClientGate) RetriedOnTool() bool {
+	return g != nil && g.retried && g.retriedOnTool
 }
 
 // Push inspects one client chunk. Release and retry return every chunk that
@@ -79,6 +86,7 @@ func (g *ClientGate) Push(payload []byte) (GateAction, [][]byte) {
 	if tool {
 		if g.RequireToolReasoning {
 			g.retried = true
+			g.retriedOnTool = true
 			g.held = nil
 			return GateRetry, nil
 		}

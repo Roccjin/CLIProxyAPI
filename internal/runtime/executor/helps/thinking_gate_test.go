@@ -57,6 +57,9 @@ func TestClientGateRetriesToolCallWithoutReasoning(t *testing.T) {
 	if action != GateRetry || flush != nil {
 		t.Fatalf("tool call action=%v flush=%d", action, len(flush))
 	}
+	if !gate.RetriedOnTool() {
+		t.Fatal("retry reason must be the tool call")
+	}
 }
 
 func TestClientGateReleasesToolCallAfterReasoning(t *testing.T) {

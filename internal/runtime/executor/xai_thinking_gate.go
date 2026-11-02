@@ -81,7 +81,7 @@ func (g *xaiThinkingGate) fail(ctx context.Context, out chan<- cliproxyexecutor.
 	}
 	if g.reporter != nil {
 		g.reporter.SealReasoningVisibility()
-		g.reporter.Publish(ctx, usage.Detail{OutputTokens: int64(tokens)})
+		g.reporter.Publish(ctx, gateUsageDetail(g.gate, tokens))
 	}
 	log.WithField("output_tokens", tokens).Info("xai thinking gate: reasoning text missing, switching credential")
 	return writeStreamChunk(ctx, out, cliproxyexecutor.StreamChunk{Err: cliproxyexecutor.NewReasoningAbsentError()})
@@ -107,10 +107,22 @@ func rejectNonStream(ctx context.Context, model string, original, upstream, body
 	if reporter != nil {
 		reporter.ObserveClientReasoning(body)
 		reporter.SealReasoningVisibility()
-		reporter.Publish(ctx, usage.Detail{OutputTokens: int64(gate.ContentTokens())})
+		reporter.Publish(ctx, gateUsageDetail(gate, gate.ContentTokens()))
 	}
 	log.WithField("output_tokens", gate.ContentTokens()).Info("xai thinking gate: non-stream reasoning text missing, switching credential")
 	return cliproxyexecutor.NewReasoningAbsentError()
+}
+
+// gateUsageDetail keeps the tool-call marker on the aborted attempt. The
+// egress guard quarantines an account from this record; without the marker a
+// rejected bare tool call carries zero output and would never strike the node.
+func gateUsageDetail(gate *helps.ClientGate, tokens int) usage.Detail {
+	detail := usage.Detail{OutputTokens: int64(tokens)}
+	if gate != nil && gate.RetriedOnTool() {
+		one := int64(1)
+		detail.ToolUsageDetails = &usage.ToolUsageDetails{ToolCallsRequested: &one}
+	}
+	return detail
 }
 
 func writeStreamPayloads(ctx context.Context, out chan<- cliproxyexecutor.StreamChunk, payloads [][]byte) bool {
