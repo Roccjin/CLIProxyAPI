@@ -1491,6 +1491,47 @@ func TestInterceptRequestPropagatesPathAcrossPluginChain_Issue6196(t *testing.T)
 	}
 }
 
+func TestInterceptRequestPropagatesMetadata(t *testing.T) {
+	host := newHostWithRecords(
+		capabilityRecord{
+			id:       "thinking-budget",
+			priority: 20,
+			plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+				RequestInterceptor: requestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+					return pluginapi.RequestInterceptResponse{
+						Metadata: map[string]any{
+							"egress_thinking_retry":             3,
+							"egress_thinking_min_output_tokens": 32,
+						},
+					}, nil
+				}),
+			}},
+		},
+		capabilityRecord{
+			id:       "later-override",
+			priority: 10,
+			plugin: pluginapi.Plugin{Capabilities: pluginapi.Capabilities{
+				RequestInterceptor: requestInterceptorFunc(func(ctx context.Context, req pluginapi.RequestInterceptRequest) (pluginapi.RequestInterceptResponse, error) {
+					return pluginapi.RequestInterceptResponse{
+						Metadata: map[string]any{"egress_thinking_retry": 1},
+					}, nil
+				}),
+			}},
+		},
+	)
+
+	got := host.InterceptRequestAfterAuth(context.Background(), pluginapi.RequestInterceptRequest{
+		Model: "grok-4.7",
+		Body:  []byte(`{"model":"grok-4.7"}`),
+	})
+	if got.Metadata["egress_thinking_retry"] != 1 {
+		t.Fatalf("retry = %#v, want later plugin value 1", got.Metadata["egress_thinking_retry"])
+	}
+	if got.Metadata["egress_thinking_min_output_tokens"] != 32 {
+		t.Fatalf("min tokens = %#v, want 32", got.Metadata["egress_thinking_min_output_tokens"])
+	}
+}
+
 func TestInterceptorsSkipExceptedPlugin(t *testing.T) {
 	originCalls := 0
 	otherCalls := 0

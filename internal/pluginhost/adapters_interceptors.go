@@ -145,6 +145,14 @@ func (h *Host) interceptRequest(ctx context.Context, req pluginapi.RequestInterc
 			if strings.TrimSpace(resp.Path) != "" {
 				current.Path = strings.TrimSpace(resp.Path)
 			}
+			if merged := cloneInterceptorMetadata(resp.Metadata); len(merged) > 0 {
+				if current.Metadata == nil {
+					current.Metadata = make(map[string]any, len(merged))
+				}
+				for key, value := range merged {
+					current.Metadata[key] = value
+				}
+			}
 			if resp.Terminate {
 				current.Terminate = true
 				current.StatusCode = resp.StatusCode
